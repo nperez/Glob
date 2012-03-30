@@ -3,6 +3,8 @@ use Path::Class;
 use MooseX::Types::Moose(':all');
 use MooseX::Types -declare => [qw/
     GlobRoot
+    Publisher
+    IPCPath
 /];
 
 subtype GlobRoot,
@@ -16,5 +18,7 @@ coerce GlobRoot,
 subtype IPCPath,
     as Str,
     where { m#ipc://.+# };
+
+role_type Publisher, { class => 'Glob::Publisher' };
 
 1;

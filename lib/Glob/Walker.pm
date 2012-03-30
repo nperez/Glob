@@ -1,31 +1,77 @@
+package Glob::Walker;
 
-sub run_walker {
-    my $dist_rule = Path::Class::Rule->new->file->iname(
+use Moose;
+use syntax 'method';
+use aliased 'Path::Class::Rule';
+use aliased 'CPAN::DistnameInfo';
+use MooseX::Types::Path::Class 'Dir';
+use MooseX::Types::Moose 'CodeRef';
+use Glob::Types 'Publisher';
+use namespace::autoclean;
+
+has publisher => (
+    isa      => Publisher,
+    required => 1,
+    handles  => {
+        publish_dist => 'publish',
+    },
+);
+
+has skip_predicate => (
+    traits  => ['Code'],
+    isa     => CodeRef,
+    default => sub { sub { 0 } },
+    handles => {
+        should_skip => 'execute',
+    },
+);
+
+has dist_dir => (
+    is       => 'ro',
+    isa      => Dir,
+    required => 1,
+    handles  => {
+        absolute_dist_file => 'file',
+    },
+);
+
+has dist_rule => (
+    is       => 'ro',
+    isa      => 'Path::Class::Rule',
+    required => 1,
+    builder  => '_build_dist_rule',
+);
+
+method _build_dist_rule {
+    return Rule->new->file->iname(
         '*.tar', qr'\.tar[._-]gz$', '*.tgz', '*.tar.bz2', '*.tbz', '*.tar.Z', '*.zip',
     );
+}
 
-    my $next = $dist_rule->iter($backpan->subdir('authors'), {
+method dist_iterator {
+    return $self->dist_rule->iter($self->dist_dir, {
         follow_symlinks =>  0,
         depthfirst      => -1,
     });
+}
 
-    my $ctx = ZeroMQ::Context->new;
-    my $pushsock = $ctx->socket(ZMQ_PUSH);
-    $pushsock->bind($ipc_path);
-    $pushsock->setsockopt(ZMQ_HWM, 32);
-
+method run_walker {
     warn "walking dists";
+
+    my $next = $self->dist_iterator;
+
     while (my $abs_file = $next->()) {
-        my $cpan_file = $abs_file->relative($backpan);
-        my $dist = CPAN::DistnameInfo->new($cpan_file);
+        my $cpan_file = $abs_file->relative( $self->dist_dir );
+        my $dist = DistnameInfo->new($cpan_file);
         my $normalised_distname = join '/' => map { $dist->$_ } qw(cpanid filename);
 
-        next if exists $existing_refs{ $normalised_distname };
-        $pushsock->send(encode_json {
+        next if $self->should_skip($normalised_distname);
+
+        $self->publish_dist({
             action => 'store_dist',
             dist   => {
                 cpan_file       => $cpan_file->stringify,
-                local_file      => $backpan->file($cpan_file)->stringify,
+                local_file      => $self->absolute_dist_file($cpan_file)->stringify,
                 normalised_name => $normalised_distname,
             },
         });
